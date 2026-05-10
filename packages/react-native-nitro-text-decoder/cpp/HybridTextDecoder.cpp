@@ -14,6 +14,11 @@
 
  #include <algorithm>
  #include <stdexcept>
+ #include <vector>
+
+#ifdef NITRO_TEXTDECODER_USE_SIMDUTF
+ #include "simdutf.h"
+#endif
 
  namespace margelo::nitro::nitrotextdecoder {
  using namespace margelo::nitro;
@@ -152,8 +157,63 @@
    }
 
    try {
+     // Mobile-optimized path selection. Three tiers, cheapest first:
+     //
+     //   Tier A — pure ASCII → createFromAscii
+     //     Saves Hermes' isAllASCII rescan; Hermes stores 1 byte/char
+     //     (Latin-1) with no transcoding. ~50% of fetch traffic.
+     //
+     //   Tier B — valid mixed UTF-8 → createFromUtf16 (simdutf) or
+     //     createFromUtf8 (raw bytes, fallback).
+     //     With simdutf: replaces Hermes' scalar UTF-8→UTF-16 transcoder
+     //     with NEON. Compiled out unless NITRO_TEXTDECODER_USE_SIMDUTF.
+     //
+     //   Tier C — slow path (decodeImpl)
+     //     Pending bytes from previous chunk, invalid sequences, fatal mode.
+     if (_pendingCount == 0 && inputBytes && inputLength > 0) [[likely]] {
+       const uint8_t *dataStart = inputBytes;
+       size_t dataLen = inputLength;
+       if (!_ignoreBOM && !_bomSeen && dataLen >= 3 &&
+           dataStart[0] == 0xEF && dataStart[1] == 0xBB &&
+           dataStart[2] == 0xBF) {
+         dataStart += 3;
+         dataLen -= 3;
+       }
+
+       // Tier A: ASCII detection — single SWAR scan.
+       size_t asciiLen = findASCIIPrefixLength(dataStart, dataLen);
+       if (asciiLen == dataLen) [[likely]] {
+         _bomSeen = stream;
+         return jsi::String::createFromAscii(
+             runtime,
+             reinterpret_cast<const char *>(dataStart),
+             dataLen);
+       }
+
+       // Tier B: validate the multi-byte suffix and dispatch.
+       size_t validLen = asciiLen +
+           findValidUTF8RunLength(dataStart + asciiLen, dataLen - asciiLen);
+       if (validLen == dataLen) [[likely]] {
+         _bomSeen = stream;
+#ifdef NITRO_TEXTDECODER_USE_SIMDUTF
+         // Worst case for UTF-8→UTF-16: every input byte → one code unit.
+         std::vector<char16_t> u16(dataLen);
+         size_t written = simdutf::convert_valid_utf8_to_utf16le(
+             reinterpret_cast<const char *>(dataStart), dataLen, u16.data());
+         return jsi::String::createFromUtf16(runtime, u16.data(), written);
+#else
+         return jsi::String::createFromUtf8(runtime, dataStart, dataLen);
+#endif
+       }
+       // Fall through to slow path on invalid bytes.
+     }
+
+     // Tier C: slow path.
      std::string result = decodeImpl(inputBytes, inputLength, stream);
-     return jsi::String::createFromUtf8(runtime, result);
+     return jsi::String::createFromUtf8(
+         runtime,
+         reinterpret_cast<const uint8_t *>(result.data()),
+         result.size());
    } catch (const std::exception &e) {
      throw jsi::JSError(runtime, e.what());
    }

@@ -59,6 +59,12 @@
  // Enables bulk-copy: decoded->append(ptr, validLen).
  size_t findValidUTF8RunLength(const uint8_t *ptr, size_t maxLen);
 
+ // Find the length of contiguous ASCII (high-bit-clear) bytes starting at
+ // ptr. Used for the createFromAscii fast-fast path: if the entire buffer
+ // is ASCII, Hermes can store it as Latin-1 without transcoding.
+ // 8-byte SWAR scan; clang auto-vectorizes at -O2.
+ size_t findASCIIPrefixLength(const uint8_t *ptr, size_t maxLen);
+
  // Decode UTF-8 bytes to a UTF-8 string (with validation and error handling).
  // This differs from Hermes which outputs UTF-16 - we keep UTF-8 output
  // since that's what std::string uses.
