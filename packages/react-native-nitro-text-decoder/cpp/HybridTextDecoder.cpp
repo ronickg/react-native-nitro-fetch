@@ -191,19 +191,37 @@
        }
 
        // Tier B: validate the multi-byte suffix and dispatch.
+#ifdef NITRO_TEXTDECODER_USE_SIMDUTF
+       // simdutf's validator returns the # of valid bytes consumed before the
+       // first error (or all of them on success). ~3x faster than the scalar
+       // run-length walker for multi-byte input.
+       auto validation = simdutf::validate_utf8_with_errors(
+           reinterpret_cast<const char *>(dataStart + asciiLen),
+           dataLen - asciiLen);
+       size_t validLen = asciiLen + validation.count;
+#else
        size_t validLen = asciiLen +
            findValidUTF8RunLength(dataStart + asciiLen, dataLen - asciiLen);
+#endif
        if (validLen == dataLen) [[likely]] {
          _bomSeen = stream;
 #ifdef NITRO_TEXTDECODER_USE_SIMDUTF
-         // Worst case for UTF-8→UTF-16: every input byte → one code unit.
-         std::vector<char16_t> u16(dataLen);
-         size_t written = simdutf::convert_valid_utf8_to_utf16le(
-             reinterpret_cast<const char *>(dataStart), dataLen, u16.data());
-         return jsi::String::createFromUtf16(runtime, u16.data(), written);
-#else
-         return jsi::String::createFromUtf8(runtime, dataStart, dataLen);
+         // Below this size, simdutf transcode setup costs more than Hermes'
+         // scalar transcode amortizes. Hand raw bytes to Hermes instead.
+         constexpr size_t kSimdMinBytes = 256;
+         if (dataLen >= kSimdMinBytes) {
+           // Thread-local UTF-16 buffer — amortizes per-call allocation across
+           // streaming chunks. Worst case: every input byte → one code unit.
+           static thread_local std::vector<char16_t> u16Buf;
+           if (u16Buf.size() < dataLen) u16Buf.resize(dataLen);
+           size_t written = simdutf::convert_valid_utf8_to_utf16le(
+               reinterpret_cast<const char *>(dataStart), dataLen,
+               u16Buf.data());
+           return jsi::String::createFromUtf16(
+               runtime, u16Buf.data(), written);
+         }
 #endif
+         return jsi::String::createFromUtf8(runtime, dataStart, dataLen);
        }
        // Fall through to slow path on invalid bytes.
      }

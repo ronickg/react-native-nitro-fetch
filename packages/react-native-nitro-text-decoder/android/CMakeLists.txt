@@ -11,6 +11,14 @@ add_library(${PACKAGE_NAME} SHARED
         ../cpp/HybridTextEncoding.cpp
         ../cpp/HybridTextDecoder.cpp
         ../cpp/TextDecoderUtils.cpp
+        ../cpp/simdutf.cpp
+)
+
+# Enable simdutf NEON UTF-8->UTF-16 transcoder in Tier B of decodeRaw.
+# Drop base64 since the decoder only needs UTF support (saves ~20-30 KB).
+target_compile_definitions(${PACKAGE_NAME} PRIVATE
+        NITRO_TEXTDECODER_USE_SIMDUTF
+        SIMDUTF_FEATURE_BASE64=0
 )
 
 # Add Nitrogen specs :)

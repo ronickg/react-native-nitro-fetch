@@ -22,6 +22,10 @@ Pod::Spec.new do |s|
     "cpp/**/*.{hpp,cpp}",
   ]
 
+  # Enable simdutf NEON UTF-8->UTF-16 transcoder in Tier B of decodeRaw.
+  # Drop base64 since the decoder only needs UTF support (saves ~20-30 KB).
+  s.compiler_flags = '-DNITRO_TEXTDECODER_USE_SIMDUTF -DSIMDUTF_FEATURE_BASE64=0'
+
   load 'nitrogen/generated/ios/NitroTextDecoder+autolinking.rb'
   add_nitrogen_files(s)
 
